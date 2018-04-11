@@ -51,7 +51,7 @@ func (g *Group) Create(stream string) (io.Writer, error) {
 		return nil, err
 	}
 
-	return NewWriter(g.group, stream, g.client), nil
+	return NewWriter(g.group, stream, g.client, nil), nil
 }
 
 // Open returns an io.Reader to read from the log stream.
