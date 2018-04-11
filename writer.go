@@ -37,12 +37,13 @@ type Writer struct {
 	sync.Mutex // This protects calls to flush.
 }
 
-func NewWriter(group, stream string, client *cloudwatchlogs.CloudWatchLogs) *Writer {
+func NewWriter(group, stream string, client *cloudwatchlogs.CloudWatchLogs, sequenceToken *string) *Writer {
 	w := &Writer{
 		group:    aws.String(group),
 		stream:   aws.String(stream),
 		client:   client,
 		throttle: time.Tick(writeThrottle),
+		sequenceToken: sequenceToken,
 	}
 	go w.start() // start flushing
 	return w
