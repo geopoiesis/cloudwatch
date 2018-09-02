@@ -1,134 +1,119 @@
 package cloudwatch
 
 import (
+	"context"
 	"io"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/service/cloudwatchlogs"
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/suite"
 )
 
-func init() {
-	now = func() time.Time {
-		return time.Unix(1, 0)
-	}
+type writerTestSuite struct {
+	suite.Suite
+
+	api                   *mockAPI
+	ctx                   context.Context
+	groupName, streamName string
+	sut                   io.WriteCloser
 }
 
-func TestWriter(t *testing.T) {
-	c := new(mockClient)
-	w := &Writer{
-		group:  aws.String("group"),
-		stream: aws.String("1234"),
-		client: c,
-	}
+func (w *writerTestSuite) SetupTest() {
+	w.api = new(mockAPI)
+	w.ctx = context.Background()
+	w.groupName = "groupName"
+	w.streamName = "streamName"
 
-	c.On("PutLogEvents", &cloudwatchlogs.PutLogEventsInput{
-		LogEvents: []*cloudwatchlogs.InputLogEvent{
-			{Message: aws.String("Hello\n"), Timestamp: aws.Int64(1000)},
-			{Message: aws.String("World"), Timestamp: aws.Int64(1000)},
+	w.api.On(
+		"CreateLogStreamWithContext",
+		w.ctx,
+		&cloudwatchlogs.CreateLogStreamInput{
+			LogGroupName:  aws.String(w.groupName),
+			LogStreamName: aws.String(w.streamName),
 		},
-		LogGroupName:  aws.String("group"),
-		LogStreamName: aws.String("1234"),
-	}).Return(&cloudwatchlogs.PutLogEventsOutput{}, nil)
+		[]request.Option(nil),
+	).Return(&cloudwatchlogs.CreateLogStreamOutput{}, nil)
 
-	n, err := io.WriteString(w, "Hello\nWorld")
-	assert.NoError(t, err)
-	assert.Equal(t, 11, n)
-
-	err = w.Flush()
-	assert.NoError(t, err)
-
-	c.AssertExpectations(t)
+	group := NewGroup(w.api, w.groupName)
+	writer, err := group.Create(w.ctx, w.streamName, freezeTime(time.Unix(1, 0)))
+	w.NoError(err)
+	w.sut = writer
 }
 
-func TestWriter_Rejected(t *testing.T) {
-	c := new(mockClient)
-	w := &Writer{
-		group:  aws.String("group"),
-		stream: aws.String("1234"),
-		client: c,
-	}
-
-	c.On("PutLogEvents", &cloudwatchlogs.PutLogEventsInput{
-		LogEvents: []*cloudwatchlogs.InputLogEvent{
-			{Message: aws.String("Hello\n"), Timestamp: aws.Int64(1000)},
-			{Message: aws.String("World"), Timestamp: aws.Int64(1000)},
+func (w *writerTestSuite) TestLifecycle() {
+	w.api.On(
+		"PutLogEventsWithContext",
+		w.ctx,
+		&cloudwatchlogs.PutLogEventsInput{
+			LogEvents: []*cloudwatchlogs.InputLogEvent{
+				{Message: aws.String("Hello\n"), Timestamp: aws.Int64(1000)},
+				{Message: aws.String("World"), Timestamp: aws.Int64(1000)},
+			},
+			LogGroupName:  aws.String(w.groupName),
+			LogStreamName: aws.String(w.streamName),
 		},
-		LogGroupName:  aws.String("group"),
-		LogStreamName: aws.String("1234"),
-	}).Return(&cloudwatchlogs.PutLogEventsOutput{
+		[]request.Option(nil),
+	).Return(&cloudwatchlogs.PutLogEventsOutput{}, nil)
+
+	n, err := io.WriteString(w.sut, "Hello\nWorld")
+	w.NoError(err)
+	w.Equal(11, n)
+	w.NoError(w.sut.Close())
+}
+
+func (w *writerTestSuite) TestWriteRejected() {
+	w.api.On(
+		"PutLogEventsWithContext",
+		w.ctx,
+		&cloudwatchlogs.PutLogEventsInput{
+			LogEvents: []*cloudwatchlogs.InputLogEvent{
+				{Message: aws.String("Hello\n"), Timestamp: aws.Int64(1000)},
+				{Message: aws.String("World"), Timestamp: aws.Int64(1000)},
+			},
+			LogGroupName:  aws.String(w.groupName),
+			LogStreamName: aws.String(w.streamName),
+		},
+		[]request.Option(nil),
+	).Return(&cloudwatchlogs.PutLogEventsOutput{
 		RejectedLogEventsInfo: &cloudwatchlogs.RejectedLogEventsInfo{
 			TooOldLogEventEndIndex: aws.Int64(2),
 		},
 	}, nil)
 
-	_, err := io.WriteString(w, "Hello\nWorld")
-	assert.NoError(t, err)
+	_, err := io.WriteString(w.sut, "Hello\nWorld")
+	w.NoError(err)
 
-	err = w.Flush()
-	assert.Error(t, err)
-	assert.IsType(t, &RejectedLogEventsInfoError{}, err)
+	const expectedError = "log messages were rejected"
+	w.EqualError(w.sut.(*writerImpl).flushAll(), expectedError)
 
-	_, err = io.WriteString(w, "Hello")
-	assert.Error(t, err)
-
-	c.AssertExpectations(t)
+	_, err = io.WriteString(w.sut, "Hello")
+	w.EqualError(err, expectedError)
 }
 
-func TestWriter_NewLine(t *testing.T) {
-	c := new(mockClient)
-	w := &Writer{
-		group:  aws.String("group"),
-		stream: aws.String("1234"),
-		client: c,
-	}
-
-	c.On("PutLogEvents", &cloudwatchlogs.PutLogEventsInput{
-		LogEvents: []*cloudwatchlogs.InputLogEvent{
-			{Message: aws.String("Hello\n"), Timestamp: aws.Int64(1000)},
+func (w *writerTestSuite) TestNewline() {
+	w.api.On(
+		"PutLogEventsWithContext",
+		w.ctx,
+		&cloudwatchlogs.PutLogEventsInput{
+			LogEvents: []*cloudwatchlogs.InputLogEvent{
+				{Message: aws.String("Hello\n"), Timestamp: aws.Int64(1000)},
+			},
+			LogGroupName:  aws.String(w.groupName),
+			LogStreamName: aws.String(w.streamName),
 		},
-		LogGroupName:  aws.String("group"),
-		LogStreamName: aws.String("1234"),
-	}).Return(&cloudwatchlogs.PutLogEventsOutput{}, nil)
+		[]request.Option(nil),
+	).Return(&cloudwatchlogs.PutLogEventsOutput{}, nil)
 
-	n, err := io.WriteString(w, "Hello\n")
-	assert.NoError(t, err)
-	assert.Equal(t, 6, n)
+	n, err := io.WriteString(w.sut, "Hello\n")
+	w.NoError(err)
+	w.Equal(6, n)
 
-	err = w.Flush()
-	assert.NoError(t, err)
-
-	c.AssertExpectations(t)
+	w.NoError(w.sut.Close())
 }
 
-func TestWriter_Close(t *testing.T) {
-	c := new(mockClient)
-	w := &Writer{
-		group:  aws.String("group"),
-		stream: aws.String("1234"),
-		client: c,
-	}
-
-	c.On("PutLogEvents", &cloudwatchlogs.PutLogEventsInput{
-		LogEvents: []*cloudwatchlogs.InputLogEvent{
-			{Message: aws.String("Hello\n"), Timestamp: aws.Int64(1000)},
-			{Message: aws.String("World"), Timestamp: aws.Int64(1000)},
-		},
-		LogGroupName:  aws.String("group"),
-		LogStreamName: aws.String("1234"),
-	}).Return(&cloudwatchlogs.PutLogEventsOutput{}, nil)
-
-	n, err := io.WriteString(w, "Hello\nWorld")
-	assert.NoError(t, err)
-	assert.Equal(t, 11, n)
-
-	err = w.Close()
-	assert.NoError(t, err)
-
-	n, err = io.WriteString(w, "Hello\nWorld")
-	assert.Equal(t, io.ErrClosedPipe, err)
-
-	c.AssertExpectations(t)
+func TestWriter(t *testing.T) {
+	suite.Run(t, new(writerTestSuite))
 }

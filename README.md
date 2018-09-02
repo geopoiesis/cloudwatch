@@ -1,15 +1,17 @@
-This is a Go library to treat CloudWatch Log streams as io.Writers and io.Readers.
+# cloudwatch
 
+This is a fork of [this library](https://github.com/ejholmes/cloudwatch) which allows treating CloudWatch Log streams as `io.WriterClosers` and `io.Readers`.
 
 ## Usage
 
 ```go
-group := NewGroup("group", cloudwatchlogs.New(defaults.DefaultConfig))
-w, err := group.Create("stream")
+session := session.Must(session.NewSession(nil))
+group := NewGroup(cloudwatchlogs.New(session), "groupName")
+w, err := group.Create("streamName")
 
 io.WriteString(w, "Hello World")
 
-r, err := group.Open("stream")
+r, err := group.Open("streamName")
 io.Copy(os.Stdout, r)
 ```
 

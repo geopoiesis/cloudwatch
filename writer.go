@@ -3,60 +3,62 @@ package cloudwatch
 import (
 	"bufio"
 	"bytes"
-	"fmt"
+	"context"
 	"io"
 	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/cloudwatchlogs"
+	iface "github.com/aws/aws-sdk-go/service/cloudwatchlogs/cloudwatchlogsiface"
 )
 
-type RejectedLogEventsInfoError struct {
-	Info *cloudwatchlogs.RejectedLogEventsInfo
-}
+type writerImpl struct {
+	client iface.CloudWatchLogsAPI
 
-func (e *RejectedLogEventsInfoError) Error() string {
-	return fmt.Sprintf("log messages were rejected")
-}
+	groupName, streamName, sequenceToken *string
 
-type EventCallback func(*cloudwatchlogs.InputLogEvent)
-
-// Writer is an io.Writer implementation that writes lines to a cloudwatch logs
-// stream.
-type Writer struct {
-	group, stream, sequenceToken *string
-
-	client client
+	ctx context.Context
 
 	closed bool
 	err    error
 
-	events eventsBuffer
-
-	onEvent EventCallback
+	events  eventsBuffer
+	nowFunc func() time.Time
+	onEvent func(*cloudwatchlogs.InputLogEvent)
 
 	throttle <-chan time.Time
 
 	sync.Mutex // This protects calls to flush.
 }
 
-func NewWriter(group, stream string, client *cloudwatchlogs.CloudWatchLogs, sequenceToken *string, onEvent EventCallback) *Writer {
-	w := &Writer{
-		group:         aws.String(group),
-		stream:        aws.String(stream),
-		client:        client,
-		onEvent:       onEvent,
-		throttle:      time.Tick(writeThrottle),
-		sequenceToken: sequenceToken,
+// WithInputCallback allows setting a function introspecting each input log
+// event before it's sent to AWS CloudWatch Logs.
+func WithInputCallback(callback func(*cloudwatchlogs.InputLogEvent)) CreateOption {
+	return func(w *writerImpl) {
+		w.onEvent = callback
 	}
-	go w.start() // start flushing
-	return w
 }
 
-// Write takes b, and creates cloudwatch log events for each individual line.
-// If Flush returns an error, subsequent calls to Write will fail.
-func (w *Writer) Write(b []byte) (int, error) {
+// FromToken allows writing from an arbitrary sequence token.
+func FromToken(sequenceToken string) CreateOption {
+	return func(w *writerImpl) {
+		w.sequenceToken = aws.String(sequenceToken)
+	}
+}
+
+func freezeTime(now time.Time) CreateOption {
+	return func(w *writerImpl) {
+		w.nowFunc = func() time.Time {
+			return now
+		}
+	}
+}
+
+// Write takes the buffer, and creates a Cloudwatch Log event for each
+// individual line. If Flush returns an error, subsequent calls to Write will
+// fail.
+func (w *writerImpl) Write(b []byte) (int, error) {
 	if w.closed {
 		return 0, io.ErrClosedPipe
 	}
@@ -68,8 +70,8 @@ func (w *Writer) Write(b []byte) (int, error) {
 	return w.buffer(b)
 }
 
-// starts continously flushing the buffered events.
-func (w *Writer) start() error {
+// Start continuously flushing the buffered events.
+func (w *writerImpl) start() error {
 	for {
 		// Exit if the stream is closed.
 		if w.closed {
@@ -77,21 +79,20 @@ func (w *Writer) start() error {
 		}
 
 		<-w.throttle
-		if err := w.Flush(); err != nil {
+		if err := w.flushAll(); err != nil {
 			return err
 		}
 	}
 }
 
-// Closes the writer. Any subsequent calls to Write will return
+// Close closes the writer. Any subsequent calls to Write will return
 // io.ErrClosedPipe.
-func (w *Writer) Close() error {
+func (w *writerImpl) Close() error {
 	w.closed = true
-	return w.Flush() // Flush remaining buffer.
+	return w.flushAll() // Flush remaining buffer.
 }
 
-// Flush flushes the events that are currently buffered.
-func (w *Writer) Flush() error {
+func (w *writerImpl) flushAll() error {
 	w.Lock()
 	defer w.Unlock()
 
@@ -106,13 +107,13 @@ func (w *Writer) Flush() error {
 	return w.err
 }
 
-// flush flashes a slice of log events. This method should be called
+// flush flushes a slice of log events. This method should be called
 // sequentially to ensure that the sequence token is updated properly.
-func (w *Writer) flush(events []*cloudwatchlogs.InputLogEvent) error {
-	resp, err := w.client.PutLogEvents(&cloudwatchlogs.PutLogEventsInput{
+func (w *writerImpl) flush(events []*cloudwatchlogs.InputLogEvent) error {
+	resp, err := w.client.PutLogEventsWithContext(w.ctx, &cloudwatchlogs.PutLogEventsInput{
 		LogEvents:     events,
-		LogGroupName:  w.group,
-		LogStreamName: w.stream,
+		LogGroupName:  w.groupName,
+		LogStreamName: w.streamName,
 		SequenceToken: w.sequenceToken,
 	})
 	if err != nil {
@@ -131,7 +132,7 @@ func (w *Writer) flush(events []*cloudwatchlogs.InputLogEvent) error {
 
 // buffer splits up b into individual log events and inserts them into the
 // buffer.
-func (w *Writer) buffer(b []byte) (int, error) {
+func (w *writerImpl) buffer(b []byte) (int, error) {
 	r := bufio.NewReader(bytes.NewReader(b))
 
 	var (
@@ -155,7 +156,7 @@ func (w *Writer) buffer(b []byte) (int, error) {
 
 		event := &cloudwatchlogs.InputLogEvent{
 			Message:   aws.String(string(b)),
-			Timestamp: aws.Int64(now().UnixNano() / 1000000),
+			Timestamp: aws.Int64(w.now().UnixNano() / 1000000),
 		}
 
 		if w.onEvent != nil {
@@ -168,6 +169,13 @@ func (w *Writer) buffer(b []byte) (int, error) {
 	}
 
 	return n, nil
+}
+
+func (w *writerImpl) now() time.Time {
+	if w.nowFunc == nil {
+		return time.Now()
+	}
+	return w.nowFunc()
 }
 
 // eventsBuffer represents a buffer of cloudwatch events that are protected by a

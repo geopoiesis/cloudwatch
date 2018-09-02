@@ -2,159 +2,186 @@ package cloudwatch
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/service/cloudwatchlogs"
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/suite"
 )
 
-func TestReader(t *testing.T) {
-	c := new(mockClient)
-	r := &Reader{
-		group:  aws.String("group"),
-		stream: aws.String("1234"),
-		client: c,
-	}
+type readerTestSuite struct {
+	suite.Suite
 
-	c.On("GetLogEvents", &cloudwatchlogs.GetLogEventsInput{
-		LogGroupName:  aws.String("group"),
-		StartFromHead: aws.Bool(true),
-		LogStreamName: aws.String("1234"),
-	}).Once().Return(&cloudwatchlogs.GetLogEventsOutput{
+	api                   *mockAPI
+	ctx                   context.Context
+	groupName, streamName string
+	sut                   io.Reader
+}
+
+func (r *readerTestSuite) SetupTest() {
+	r.api = new(mockAPI)
+	r.ctx = context.Background()
+	r.groupName = "groupName"
+	r.streamName = "streamName"
+
+	r.sut = &readerImpl{
+		client:     r.api,
+		ctx:        r.ctx,
+		groupName:  aws.String(r.groupName),
+		streamName: aws.String(r.streamName),
+	}
+}
+
+func (r *readerTestSuite) TestSimpleRead() {
+	r.api.On(
+		"GetLogEventsWithContext",
+		r.ctx,
+		&cloudwatchlogs.GetLogEventsInput{
+			LogGroupName:  aws.String(r.groupName),
+			LogStreamName: aws.String(r.streamName),
+			StartFromHead: aws.Bool(true),
+		},
+		[]request.Option(nil),
+	).Once().Return(&cloudwatchlogs.GetLogEventsOutput{
 		Events: []*cloudwatchlogs.OutputLogEvent{
 			{Message: aws.String("Hello"), Timestamp: aws.Int64(1000)},
 		},
 	}, nil)
 
-	err := r.read()
-	assert.NoError(t, err)
+	r.NoError(r.sut.(*readerImpl).read())
 
-	b := make([]byte, 1000)
-	n, err := r.Read(b)
-	assert.NoError(t, err)
-	assert.Equal(t, 5, n)
+	buffer := make([]byte, 1000)
+	n, err := r.sut.Read(buffer)
 
-	c.AssertExpectations(t)
+	r.NoError(err)
+	r.Equal(5, n)
 }
 
-func TestReader_Buffering(t *testing.T) {
-	c := new(mockClient)
-	r := &Reader{
-		group:  aws.String("group"),
-		stream: aws.String("1234"),
-		client: c,
-	}
-
-	c.On("GetLogEvents", &cloudwatchlogs.GetLogEventsInput{
-		LogGroupName:  aws.String("group"),
-		StartFromHead: aws.Bool(true),
-		LogStreamName: aws.String("1234"),
-	}).Once().Return(&cloudwatchlogs.GetLogEventsOutput{
+func (r *readerTestSuite) TestBuffering() {
+	r.api.On(
+		"GetLogEventsWithContext",
+		r.ctx,
+		&cloudwatchlogs.GetLogEventsInput{
+			LogGroupName:  aws.String(r.groupName),
+			LogStreamName: aws.String(r.streamName),
+			StartFromHead: aws.Bool(true),
+		},
+		[]request.Option(nil),
+	).Once().Return(&cloudwatchlogs.GetLogEventsOutput{
 		Events: []*cloudwatchlogs.OutputLogEvent{
 			{Message: aws.String("Hello"), Timestamp: aws.Int64(1000)},
 		},
 	}, nil)
 
-	err := r.read()
-	assert.NoError(t, err)
+	r.NoError(r.sut.(*readerImpl).read())
 
-	b := make([]byte, 3)
-	n, err := r.Read(b) //Hel
-	assert.NoError(t, err)
-	assert.Equal(t, 3, n)
+	buffer := make([]byte, 3)
 
-	n, err = r.Read(b) //lo
-	assert.NoError(t, err)
-	assert.Equal(t, 2, n)
+	n, err := r.sut.Read(buffer)
+	r.NoError(err)
+	r.Equal(3, n)
+	r.Equal("Hel", string(buffer[:n]))
 
-	c.AssertExpectations(t)
+	n, err = r.sut.Read(buffer)
+	r.NoError(err)
+	r.Equal(2, n)
+	r.Equal("lo", string(buffer[:n]))
 }
 
-func TestReader_EndOfFile(t *testing.T) {
-	c := new(mockClient)
-	r := &Reader{
-		group:  aws.String("group"),
-		stream: aws.String("1234"),
-		client: c,
-	}
-
-	c.On("GetLogEvents", &cloudwatchlogs.GetLogEventsInput{
-		LogGroupName:  aws.String("group"),
-		StartFromHead: aws.Bool(true),
-		LogStreamName: aws.String("1234"),
-	}).Once().Return(&cloudwatchlogs.GetLogEventsOutput{
+func (r *readerTestSuite) TestEndOfFile() {
+	r.api.On(
+		"GetLogEventsWithContext",
+		r.ctx,
+		&cloudwatchlogs.GetLogEventsInput{
+			LogGroupName:  aws.String(r.groupName),
+			LogStreamName: aws.String(r.streamName),
+			StartFromHead: aws.Bool(true),
+		},
+		[]request.Option(nil),
+	).Once().Return(&cloudwatchlogs.GetLogEventsOutput{
 		Events: []*cloudwatchlogs.OutputLogEvent{
 			{Message: aws.String("Hello"), Timestamp: aws.Int64(1000)},
 		},
 		NextForwardToken: aws.String("next"),
 	}, nil)
 
-	c.On("GetLogEvents", &cloudwatchlogs.GetLogEventsInput{
-		LogGroupName:  aws.String("group"),
-		LogStreamName: aws.String("1234"),
-		StartFromHead: aws.Bool(true),
-		NextToken:     aws.String("next"),
-	}).Once().Return(&cloudwatchlogs.GetLogEventsOutput{
+	r.api.On(
+		"GetLogEventsWithContext",
+		r.ctx,
+		&cloudwatchlogs.GetLogEventsInput{
+			LogGroupName:  aws.String(r.groupName),
+			LogStreamName: aws.String(r.streamName),
+			StartFromHead: aws.Bool(true),
+			NextToken:     aws.String("next"),
+		},
+		[]request.Option(nil),
+	).Once().Return(&cloudwatchlogs.GetLogEventsOutput{
 		Events: []*cloudwatchlogs.OutputLogEvent{
 			{Message: aws.String("World"), Timestamp: aws.Int64(1000)},
 		},
 	}, nil)
 
-	c.On("GetLogEvents", &cloudwatchlogs.GetLogEventsInput{
-		LogGroupName:  aws.String("group"),
-		LogStreamName: aws.String("1234"),
-		StartFromHead: aws.Bool(true),
-		NextToken:     aws.String("next"),
-	}).Once().Return(&cloudwatchlogs.GetLogEventsOutput{
+	r.api.On(
+		"GetLogEventsWithContext",
+		r.ctx,
+		&cloudwatchlogs.GetLogEventsInput{
+			LogGroupName:  aws.String(r.groupName),
+			LogStreamName: aws.String(r.streamName),
+			StartFromHead: aws.Bool(true),
+			NextToken:     aws.String("next"),
+		},
+		[]request.Option(nil),
+	).Once().Return(&cloudwatchlogs.GetLogEventsOutput{
 		Events: []*cloudwatchlogs.OutputLogEvent{},
 	}, nil)
 
-	err := r.read()
-	assert.NoError(t, err)
+	r.NoError(r.sut.(*readerImpl).read())
+	buffer := make([]byte, 5)
+	n, err := r.sut.Read(buffer)
+	r.NoError(err)
+	r.Equal(5, n)
+	r.EqualValues("Hello", buffer[:n])
 
-	b := make([]byte, 5)
-	n, err := r.Read(b) //Hello
-	assert.NoError(t, err)
-	assert.Equal(t, 5, n)
+	r.NoError(r.sut.(*readerImpl).read())
+	n, err = r.sut.Read(buffer)
+	r.NoError(err)
+	r.Equal(5, n)
+	r.EqualValues("World", buffer[:n])
 
-	err = r.read()
-	assert.NoError(t, err)
-
-	n, err = r.Read(b) //World
-	assert.NoError(t, err)
-	assert.Equal(t, 5, n)
-
-	err = r.read()
-	assert.NoError(t, err)
-
-	// Attempt to read more data, but there is none.
-	n, err = r.Read(b)
-	assert.NoError(t, err)
-	assert.Equal(t, 0, n)
-
-	c.AssertExpectations(t)
+	r.NoError(r.sut.(*readerImpl).read())
+	n, err = r.sut.Read(buffer)
+	r.NoError(err)
+	r.Equal(0, n)
 }
 
-func TestReader_Err(t *testing.T) {
-	c := new(mockClient)
+func (r *readerTestSuite) TestReadError() {
+	r.sut = NewGroup(r.api, r.groupName).Open(r.ctx, r.streamName)
 
-	errBoom := errors.New("boom")
-	c.On("GetLogEvents", &cloudwatchlogs.GetLogEventsInput{
-		LogGroupName:  aws.String("group"),
-		StartFromHead: aws.Bool(true),
-		LogStreamName: aws.String("1234"),
-	}).Once().Return(&cloudwatchlogs.GetLogEventsOutput{
+	const errorMessage = "boom!"
+	r.api.On(
+		"GetLogEventsWithContext",
+		r.ctx,
+		&cloudwatchlogs.GetLogEventsInput{
+			LogGroupName:  aws.String(r.groupName),
+			LogStreamName: aws.String(r.streamName),
+			StartFromHead: aws.Bool(true),
+		},
+		[]request.Option(nil),
+	).Once().Return(&cloudwatchlogs.GetLogEventsOutput{
 		Events: []*cloudwatchlogs.OutputLogEvent{
 			{Message: aws.String("Hello"), Timestamp: aws.Int64(1000)},
 		},
-	}, errBoom)
+	}, errors.New(errorMessage))
 
-	r := newReader("group", "1234", c)
+	buffer := new(bytes.Buffer)
+	_, err := io.Copy(buffer, r.sut)
+	r.EqualError(err, errorMessage)
+}
 
-	b := new(bytes.Buffer)
-	_, err := io.Copy(b, r)
-	assert.Equal(t, errBoom, err)
+func TestReader(t *testing.T) {
+	suite.Run(t, new(readerTestSuite))
 }

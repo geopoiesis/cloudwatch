@@ -2,45 +2,43 @@ package cloudwatch
 
 import (
 	"bytes"
+	"context"
 	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/cloudwatchlogs"
+	iface "github.com/aws/aws-sdk-go/service/cloudwatchlogs/cloudwatchlogsiface"
 )
 
-// Reader is an io.Reader implementation that streams log lines from cloudwatch
-// logs.
-type Reader struct {
-	group, stream, nextToken *string
+type readerImpl struct {
+	groupName, streamName, nextToken *string
 
-	client client
+	client iface.CloudWatchLogsAPI
+	ctx    context.Context
 
 	throttle <-chan time.Time
-
-	b lockingBuffer
+	buffer   lockingBuffer
 
 	// If an error occurs when getting events from the stream, this will be
 	// populated and subsequent calls to Read will return the error.
 	err error
 }
 
-func NewReader(group, stream string, client *cloudwatchlogs.CloudWatchLogs) *Reader {
-	return newReader(group, stream, client)
-}
-
-func newReader(group, stream string, client client) *Reader {
-	r := &Reader{
-		group:    aws.String(group),
-		stream:   aws.String(stream),
-		client:   client,
-		throttle: time.Tick(readThrottle),
+func (r *readerImpl) Read(b []byte) (int, error) {
+	// Return the AWS error if there is one.
+	if r.err != nil {
+		return 0, r.err
 	}
-	go r.start()
-	return r
+	// If there is not data right now, return. Reading from the buffer would
+	// result in io.EOF being returned, which is not what we want.
+	if r.buffer.Len() == 0 {
+		return 0, nil
+	}
+	return r.buffer.Read(b)
 }
 
-func (r *Reader) start() {
+func (r *readerImpl) start() {
 	for {
 		<-r.throttle
 		if r.err = r.read(); r.err != nil {
@@ -49,16 +47,15 @@ func (r *Reader) start() {
 	}
 }
 
-func (r *Reader) read() error {
-
-	params := &cloudwatchlogs.GetLogEventsInput{
-		LogGroupName:  r.group,
-		LogStreamName: r.stream,
+func (r *readerImpl) read() error {
+	input := &cloudwatchlogs.GetLogEventsInput{
+		LogGroupName:  r.groupName,
+		LogStreamName: r.streamName,
 		StartFromHead: aws.Bool(true),
 		NextToken:     r.nextToken,
 	}
 
-	resp, err := r.client.GetLogEvents(params)
+	resp, err := r.client.GetLogEventsWithContext(r.ctx, input)
 
 	if err != nil {
 		return err
@@ -77,25 +74,10 @@ func (r *Reader) read() error {
 	}
 
 	for _, event := range resp.Events {
-		r.b.WriteString(*event.Message)
+		r.buffer.WriteString(*event.Message)
 	}
 
 	return nil
-}
-
-func (r *Reader) Read(b []byte) (int, error) {
-	// Return the AWS error if there is one.
-	if r.err != nil {
-		return 0, r.err
-	}
-
-	// If there is not data right now, return. Reading from the buffer would
-	// result in io.EOF being returned, which is not what we want.
-	if r.b.Len() == 0 {
-		return 0, nil
-	}
-
-	return r.b.Read(b)
 }
 
 // lockingBuffer is a bytes.Buffer that locks Reads and Writes.
