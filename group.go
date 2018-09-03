@@ -25,21 +25,17 @@ const (
 // var now = time.Now
 
 type groupImpl struct {
-	client    iface.CloudWatchLogsAPI
+	iface.CloudWatchLogsAPI
 	groupName string
 }
 
 // NewGroup returns a new Group instance.
 func NewGroup(client iface.CloudWatchLogsAPI, groupName string) Group {
-	return &groupImpl{
-		client:    client,
-		groupName: groupName,
-	}
+	return &groupImpl{client, groupName}
 }
 
-// Create creates a log stream in the group and returns an io.Writer for it.
 func (g *groupImpl) Create(ctx context.Context, streamName string, opts ...CreateOption) (io.WriteCloser, error) {
-	_, err := g.client.CreateLogStreamWithContext(ctx, &cloudwatchlogs.CreateLogStreamInput{
+	_, err := g.CreateLogStreamWithContext(ctx, &cloudwatchlogs.CreateLogStreamInput{
 		LogGroupName:  aws.String(g.groupName),
 		LogStreamName: aws.String(streamName),
 	})
@@ -47,7 +43,7 @@ func (g *groupImpl) Create(ctx context.Context, streamName string, opts ...Creat
 		return nil, errors.Wrap(err, "could not create a log stream")
 	}
 	ret := &writerImpl{
-		client:     g.client,
+		client:     g,
 		ctx:        ctx,
 		groupName:  aws.String(g.groupName),
 		streamName: aws.String(streamName),
@@ -61,10 +57,13 @@ func (g *groupImpl) Create(ctx context.Context, streamName string, opts ...Creat
 	return ret, nil
 }
 
-// Open returns an io.Reader to read from the log stream.
+func (g *groupImpl) Name() string {
+	return g.groupName
+}
+
 func (g *groupImpl) Open(ctx context.Context, streamName string) io.Reader {
 	ret := &readerImpl{
-		client:     g.client,
+		client:     g,
 		ctx:        ctx,
 		groupName:  aws.String(g.groupName),
 		streamName: aws.String(streamName),
