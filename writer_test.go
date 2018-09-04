@@ -28,6 +28,16 @@ func (w *writerTestSuite) SetupTest() {
 	w.streamName = "streamName"
 
 	w.api.On(
+		"DescribeLogStreamsWithContext",
+		w.ctx,
+		&cloudwatchlogs.DescribeLogStreamsInput{
+			LogGroupName:        aws.String(w.groupName),
+			LogStreamNamePrefix: aws.String(w.streamName),
+		},
+		[]request.Option(nil),
+	).Return(&cloudwatchlogs.DescribeLogStreamsOutput{LogStreams: nil}, nil)
+
+	w.api.On(
 		"CreateLogStreamWithContext",
 		w.ctx,
 		&cloudwatchlogs.CreateLogStreamInput{
