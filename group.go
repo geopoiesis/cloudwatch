@@ -35,20 +35,11 @@ func NewGroup(client iface.CloudWatchLogsAPI, groupName string) Group {
 }
 
 func (g *groupImpl) Create(ctx context.Context, streamName string, opts ...CreateOption) (io.WriteCloser, error) {
-	_, err := g.CreateLogStreamWithContext(ctx, &cloudwatchlogs.CreateLogStreamInput{
-		LogGroupName:  aws.String(g.groupName),
-		LogStreamName: aws.String(streamName),
-	})
+	ret, err := g.create(ctx, streamName)
 	if err != nil {
-		return nil, errors.Wrap(err, "could not create a log stream")
+		return nil, err
 	}
-	ret := &writerImpl{
-		client:     g,
-		ctx:        ctx,
-		groupName:  aws.String(g.groupName),
-		streamName: aws.String(streamName),
-		throttle:   time.Tick(writeThrottle),
-	}
+
 	for _, opt := range opts {
 		opt(ret)
 	}
@@ -72,4 +63,32 @@ func (g *groupImpl) Open(ctx context.Context, streamName string) io.Reader {
 
 	go ret.start()
 	return ret
+}
+
+func (g *groupImpl) create(ctx context.Context, streamName string) (*writerImpl, error) {
+	ret := &writerImpl{
+		client:     g,
+		ctx:        ctx,
+		groupName:  aws.String(g.groupName),
+		streamName: aws.String(streamName),
+		throttle:   time.Tick(writeThrottle),
+	}
+
+	description, err := g.DescribeLogStreamsWithContext(ctx, &cloudwatchlogs.DescribeLogStreamsInput{
+		LogGroupName:        aws.String(g.groupName),
+		LogStreamNamePrefix: aws.String(streamName),
+	})
+	if err != nil {
+		return nil, errors.Wrap(err, "couldn't get log stream description")
+	}
+	if len(description.LogStreams) > 0 {
+		ret.sequenceToken = description.LogStreams[0].UploadSequenceToken
+		return ret, nil
+	}
+
+	_, err = g.CreateLogStreamWithContext(ctx, &cloudwatchlogs.CreateLogStreamInput{
+		LogGroupName:  aws.String(g.groupName),
+		LogStreamName: aws.String(streamName),
+	})
+	return ret, errors.Wrap(err, "could not create a log stream")
 }
