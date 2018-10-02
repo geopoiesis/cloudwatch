@@ -97,7 +97,7 @@ func (w *writerTestSuite) TestWriteRejected() {
 	w.NoError(err)
 
 	const expectedError = "log messages were rejected"
-	w.EqualError(w.sut.(*writerImpl).flushAll(), expectedError)
+	w.EqualError(w.sut.(*writerImpl).flushBatch(), expectedError)
 
 	_, err = io.WriteString(w.sut, "Hello")
 	w.EqualError(err, expectedError)
