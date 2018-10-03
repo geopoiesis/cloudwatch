@@ -69,6 +69,7 @@ func (g *groupImpl) create(ctx context.Context, streamName string) (*writerImpl,
 	ret := &writerImpl{
 		client:     g,
 		ctx:        ctx,
+		events:     newEventsBuffer(),
 		groupName:  aws.String(g.groupName),
 		streamName: aws.String(streamName),
 		throttle:   time.Tick(writeThrottle),

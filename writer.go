@@ -23,7 +23,7 @@ type writerImpl struct {
 	closed bool
 	err    error
 
-	events  eventsBuffer
+	events  *eventsBuffer
 	nowFunc func() time.Time
 	onEvent func(*cloudwatchlogs.InputLogEvent)
 
@@ -78,8 +78,7 @@ func (w *writerImpl) start() error {
 			return nil
 		}
 
-		<-w.throttle
-		if err := w.flushAll(); err != nil {
+		if err := w.flushTrottled(); err != nil {
 			return err
 		}
 	}
@@ -89,10 +88,20 @@ func (w *writerImpl) start() error {
 // io.ErrClosedPipe.
 func (w *writerImpl) Close() error {
 	w.closed = true
-	return w.flushAll() // Flush remaining buffer.
+	for w.events.hasMore() {
+		if w.flushTrottled() != nil {
+			break
+		}
+	}
+	return w.err
 }
 
-func (w *writerImpl) flushAll() error {
+func (w *writerImpl) flushTrottled() error {
+	<-w.throttle
+	return w.flushBatch()
+}
+
+func (w *writerImpl) flushBatch() error {
 	w.Lock()
 	defer w.Unlock()
 
@@ -176,27 +185,4 @@ func (w *writerImpl) now() time.Time {
 		return time.Now()
 	}
 	return w.nowFunc()
-}
-
-// eventsBuffer represents a buffer of cloudwatch events that are protected by a
-// mutex.
-type eventsBuffer struct {
-	sync.Mutex
-	events []*cloudwatchlogs.InputLogEvent
-}
-
-func (b *eventsBuffer) add(event *cloudwatchlogs.InputLogEvent) {
-	b.Lock()
-	defer b.Unlock()
-
-	b.events = append(b.events, event)
-}
-
-func (b *eventsBuffer) drain() []*cloudwatchlogs.InputLogEvent {
-	b.Lock()
-	defer b.Unlock()
-
-	events := b.events[:]
-	b.events = nil
-	return events
 }
