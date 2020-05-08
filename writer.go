@@ -118,14 +118,21 @@ func (w *writerImpl) flushBatch() error {
 
 // flush flushes a slice of log events. This method should be called
 // sequentially to ensure that the sequence token is updated properly.
-func (w *writerImpl) flush(events []*cloudwatchlogs.InputLogEvent) error {
-	resp, err := w.client.PutLogEventsWithContext(w.ctx, &cloudwatchlogs.PutLogEventsInput{
-		LogEvents:     events,
-		LogGroupName:  w.groupName,
-		LogStreamName: w.streamName,
-		SequenceToken: w.sequenceToken,
-	})
-	if err != nil {
+func (w *writerImpl) flush(events []*cloudwatchlogs.InputLogEvent) (err error) {
+	var resp *cloudwatchlogs.PutLogEventsOutput
+
+	for {
+		resp, err = w.client.PutLogEventsWithContext(w.ctx, &cloudwatchlogs.PutLogEventsInput{
+			LogEvents:     events,
+			LogGroupName:  w.groupName,
+			LogStreamName: w.streamName,
+			SequenceToken: w.sequenceToken,
+		})
+
+		if err == nil {
+			break
+		}
+
 		sequenceError, ok := err.(*cloudwatchlogs.InvalidSequenceTokenException)
 		if !ok {
 			return err

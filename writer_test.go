@@ -137,6 +137,11 @@ func (w *writerTestSuite) TestWriteInvalidSequenceToken() {
 
 	_, err := io.WriteString(w.sut, "Hello\nWorld")
 	w.Require().NoError(err)
+
+	w.Require().NoError(w.sut.(*writerImpl).flushBatch())
+
+	w.Require().NotNil(w.sut.(*writerImpl).sequenceToken)
+	w.Equal("cabbage", *w.sut.(*writerImpl).sequenceToken)
 }
 
 func (w *writerTestSuite) TestNewline() {
