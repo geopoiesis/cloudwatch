@@ -103,6 +103,47 @@ func (w *writerTestSuite) TestWriteRejected() {
 	w.EqualError(err, expectedError)
 }
 
+func (w *writerTestSuite) TestWriteInvalidSequenceToken() {
+	const expectedSequenceToken = "bacon"
+
+	w.api.On(
+		"PutLogEventsWithContext",
+		w.ctx,
+		&cloudwatchlogs.PutLogEventsInput{
+			LogEvents: []*cloudwatchlogs.InputLogEvent{
+				{Message: aws.String("Hello\n"), Timestamp: aws.Int64(1000)},
+				{Message: aws.String("World"), Timestamp: aws.Int64(1000)},
+			},
+			LogGroupName:  aws.String(w.groupName),
+			LogStreamName: aws.String(w.streamName),
+		},
+		[]request.Option(nil),
+	).Return((*cloudwatchlogs.PutLogEventsOutput)(nil), &cloudwatchlogs.InvalidSequenceTokenException{
+		ExpectedSequenceToken: aws.String("bacon"),
+	}).On(
+		"PutLogEventsWithContext",
+		w.ctx,
+		&cloudwatchlogs.PutLogEventsInput{
+			LogEvents: []*cloudwatchlogs.InputLogEvent{
+				{Message: aws.String("Hello\n"), Timestamp: aws.Int64(1000)},
+				{Message: aws.String("World"), Timestamp: aws.Int64(1000)},
+			},
+			LogGroupName:  aws.String(w.groupName),
+			LogStreamName: aws.String(w.streamName),
+			SequenceToken: aws.String(expectedSequenceToken),
+		},
+		[]request.Option(nil),
+	).Return(&cloudwatchlogs.PutLogEventsOutput{NextSequenceToken: aws.String("cabbage")}, nil)
+
+	_, err := io.WriteString(w.sut, "Hello\nWorld")
+	w.Require().NoError(err)
+
+	w.Require().NoError(w.sut.(*writerImpl).flushBatch())
+
+	w.Require().NotNil(w.sut.(*writerImpl).sequenceToken)
+	w.Equal("cabbage", *w.sut.(*writerImpl).sequenceToken)
+}
+
 func (w *writerTestSuite) TestNewline() {
 	w.api.On(
 		"PutLogEventsWithContext",
