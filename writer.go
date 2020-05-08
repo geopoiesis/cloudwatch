@@ -126,7 +126,12 @@ func (w *writerImpl) flush(events []*cloudwatchlogs.InputLogEvent) error {
 		SequenceToken: w.sequenceToken,
 	})
 	if err != nil {
-		return err
+		sequenceError, ok := err.(*cloudwatchlogs.InvalidSequenceTokenException)
+		if !ok {
+			return err
+		}
+
+		w.sequenceToken = sequenceError.ExpectedSequenceToken
 	}
 
 	if resp.RejectedLogEventsInfo != nil {
