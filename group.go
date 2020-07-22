@@ -8,6 +8,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/cloudwatchlogs"
 	iface "github.com/aws/aws-sdk-go/service/cloudwatchlogs/cloudwatchlogsiface"
+	"github.com/enfipy/locker"
+
 	"github.com/pkg/errors"
 )
 
@@ -27,11 +29,16 @@ const (
 type groupImpl struct {
 	iface.CloudWatchLogsAPI
 	groupName string
+	locker    *locker.Locker
 }
 
 // NewGroup returns a new Group instance.
 func NewGroup(client iface.CloudWatchLogsAPI, groupName string) Group {
-	return &groupImpl{client, groupName}
+	return &groupImpl{
+		CloudWatchLogsAPI: client,
+		groupName:         groupName,
+		locker:            locker.Initialize(),
+	}
 }
 
 func (g *groupImpl) Create(ctx context.Context, streamName string, opts ...CreateOption) (io.WriteCloser, error) {
@@ -75,6 +82,9 @@ func (g *groupImpl) create(ctx context.Context, streamName string) (*writerImpl,
 		throttle:   time.Tick(writeThrottle),
 	}
 
+	unlock := g.locker.Lock(streamName)
+	defer unlock()
+
 	description, err := g.DescribeLogStreamsWithContext(ctx, &cloudwatchlogs.DescribeLogStreamsInput{
 		LogGroupName:        aws.String(g.groupName),
 		LogStreamNamePrefix: aws.String(streamName),
@@ -82,6 +92,7 @@ func (g *groupImpl) create(ctx context.Context, streamName string) (*writerImpl,
 	if err != nil {
 		return nil, errors.Wrap(err, "couldn't get log stream description")
 	}
+
 	if len(description.LogStreams) > 0 {
 		ret.sequenceToken = description.LogStreams[0].UploadSequenceToken
 		return ret, nil
@@ -91,5 +102,6 @@ func (g *groupImpl) create(ctx context.Context, streamName string) (*writerImpl,
 		LogGroupName:  aws.String(g.groupName),
 		LogStreamName: aws.String(streamName),
 	})
+
 	return ret, errors.Wrap(err, "could not create a log stream")
 }
