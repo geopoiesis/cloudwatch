@@ -76,6 +76,16 @@ func (gs *groupTestSuite) TestCreateDescribingStreamFails() {
 	gs.Nil(writer)
 }
 
+func (gs *groupTestSuite) TestCreateDescribingStream_MissingLogStreamData() {
+	gs.creatingLogStreamReturns(new(cloudwatchlogs.ResourceAlreadyExistsException))
+	gs.describingStreamsReturns(nil, nil)
+
+	writer, err := gs.sut.Create(gs.ctx, gs.streamName)
+
+	gs.EqualError(err, "logs streams data missing for streamName")
+	gs.Nil(writer)
+}
+
 func (gs *groupTestSuite) describingStreamsReturns(result []*cloudwatchlogs.LogStream, err error) {
 	gs.api.On(
 		"DescribeLogStreamsWithContext",
