@@ -27,47 +27,52 @@ func (gs *groupTestSuite) SetupTest() {
 	gs.sut = NewGroup(gs.api, gs.groupName)
 }
 
-func (gs *groupTestSuite) TestCreateWithExistingStream() {
-	const sequenceToken = "sequenceToken"
-	ctx := context.Background()
-	gs.describingStreamsReturns([]*cloudwatchlogs.LogStream{
-		{UploadSequenceToken: aws.String(sequenceToken)},
-	}, nil)
-
-	writer, err := gs.sut.Create(ctx, gs.streamName)
-	gs.NoError(err)
-	gs.NotNil(writer)
-
-	gs.Equal(sequenceToken, *writer.(*writerImpl).sequenceToken)
-}
-
-func (gs *groupTestSuite) TestCreateDescribingStreamFails() {
-	ctx := context.Background()
-	gs.describingStreamsReturns(nil, errors.New("bacon"))
-
-	writer, err := gs.sut.Create(ctx, gs.streamName)
-	gs.EqualError(err, "couldn't get log stream description: bacon")
-	gs.Nil(writer)
-}
-
-func (gs *groupTestSuite) TestCreateWithoutExistingStream() {
-	ctx := context.Background()
-	gs.describingStreamsReturns(nil, nil)
+func (gs *groupTestSuite) TestCreateWithNoExistingStream_OK() {
 	gs.creatingLogStreamReturns(nil)
 
-	writer, err := gs.sut.Create(ctx, gs.streamName)
+	writer, err := gs.sut.Create(gs.ctx, gs.streamName)
+
+	gs.Require().NotNil(writer)
 	gs.NoError(err)
-	gs.NotNil(writer)
 
 	gs.Nil(writer.(*writerImpl).sequenceToken)
 }
 
-func (gs *groupTestSuite) TestCreateCreatingStreamFails() {
-	gs.describingStreamsReturns(nil, nil)
+func (gs *groupTestSuite) TestCreateWithExistingStream_OK() {
+	const sequenceToken = "sequenceToken"
+
+	gs.creatingLogStreamReturns(new(cloudwatchlogs.ResourceAlreadyExistsException))
+
+	gs.describingStreamsReturns([]*cloudwatchlogs.LogStream{
+		{UploadSequenceToken: aws.String(sequenceToken)},
+	}, nil)
+
+	writer, err := gs.sut.Create(gs.ctx, gs.streamName)
+
+	gs.Require().NotNil(writer)
+	gs.NoError(err)
+
+	gs.Equal(sequenceToken, *writer.(*writerImpl).sequenceToken)
+}
+
+func (gs *groupTestSuite) TestCreateWithExistingStream_UnexpectedFailure() {
+	const sequenceToken = "sequenceToken"
+
 	gs.creatingLogStreamReturns(errors.New("bacon"))
 
 	writer, err := gs.sut.Create(gs.ctx, gs.streamName)
-	gs.EqualError(err, "could not create a log stream: bacon")
+
+	gs.Nil(writer)
+	gs.EqualError(err, "could not create the log stream: bacon")
+}
+
+func (gs *groupTestSuite) TestCreateDescribingStreamFails() {
+	gs.creatingLogStreamReturns(new(cloudwatchlogs.ResourceAlreadyExistsException))
+	gs.describingStreamsReturns(nil, errors.New("bacon"))
+
+	writer, err := gs.sut.Create(gs.ctx, gs.streamName)
+
+	gs.EqualError(err, "couldn't get log stream description: bacon")
 	gs.Nil(writer)
 }
 
