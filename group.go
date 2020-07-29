@@ -85,23 +85,31 @@ func (g *groupImpl) create(ctx context.Context, streamName string) (*writerImpl,
 	unlock := g.locker.Lock(streamName)
 	defer unlock()
 
-	description, err := g.DescribeLogStreamsWithContext(ctx, &cloudwatchlogs.DescribeLogStreamsInput{
-		LogGroupName:        aws.String(g.groupName),
-		LogStreamNamePrefix: aws.String(streamName),
-	})
-	if err != nil {
-		return nil, errors.Wrap(err, "couldn't get log stream description")
-	}
-
-	if len(description.LogStreams) > 0 {
-		ret.sequenceToken = description.LogStreams[0].UploadSequenceToken
-		return ret, nil
-	}
-
-	_, err = g.CreateLogStreamWithContext(ctx, &cloudwatchlogs.CreateLogStreamInput{
+	_, err := g.CreateLogStreamWithContext(ctx, &cloudwatchlogs.CreateLogStreamInput{
 		LogGroupName:  aws.String(g.groupName),
 		LogStreamName: aws.String(streamName),
 	})
 
-	return ret, errors.Wrap(err, "could not create a log stream")
+	if err == nil {
+		return ret, nil
+	} else if _, ok := err.(*cloudwatchlogs.ResourceAlreadyExistsException); !ok {
+		return nil, errors.Wrap(err, "could not create the log stream")
+	}
+
+	description, err := g.DescribeLogStreamsWithContext(ctx, &cloudwatchlogs.DescribeLogStreamsInput{
+		LogGroupName:        aws.String(g.groupName),
+		LogStreamNamePrefix: aws.String(streamName),
+	})
+
+	if err != nil {
+		return nil, errors.Wrap(err, "couldn't get log stream description")
+	}
+
+	if len(description.LogStreams) == 0 {
+		return nil, errors.Errorf("logs streams data missing for %s", streamName)
+	}
+
+	ret.sequenceToken = description.LogStreams[0].UploadSequenceToken
+
+	return ret, nil
 }
